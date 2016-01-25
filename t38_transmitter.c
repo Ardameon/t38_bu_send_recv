@@ -17,10 +17,17 @@
 #include <fcntl.h>
 #include <stdint.h>
 
+//#include "fax.h"
+#include "fax_bu.h"
+#include "msg_proc.h"
+
 #define  IP4_MAX_LEN 15
 #define  PORT_NUM 44444
 
 #define  SETUP_MSG "SETUP 000001 GG 192.168.23.20:44444 192.168.23.20:55555"
+#define  FAX_SEND_PORT 44433
+#define  FAX_RECV_PORT 44455
+
 
 int gl_sock;
 
@@ -130,10 +137,12 @@ int main(int argc, char *argv[])
     int /*i,*/ res;
     char local_ip[IP4_MAX_LEN], remote_ip[IP4_MAX_LEN];
     unsigned local_port = PORT_NUM, remote_port;
-    char buffer[256];
+    char buffer[512];
     int buflen;
     int len;
     int sock;
+    sig_message_t *msg_req = NULL;
+    sig_message_t *msg_resp = NULL;
 
     if (argc < 3) {
         printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT]\n");
@@ -161,9 +170,14 @@ int main(int argc, char *argv[])
 
     printf("Remote IP is '%s:%d'\n", remote_ip, remote_port);
 
-    sprintf(buffer, "%s\r\n", SETUP_MSG);
-    buflen = strlen(buffer);
+    sig_msgCreateSetup("00001",
+                       ntohl(inet_addr(local_ip)), FAX_SEND_PORT,
+                       ntohl(inet_addr(local_ip)), FAX_RECV_PORT,
+                       FAX_MODE_GW_GW, (sig_message_setup_t **)(&msg_req));
 
+    sig_msgCompose(msg_req, buffer, sizeof(buffer));
+
+    buflen = strlen(buffer);
     printf("buffer_len: %d buffer: '%.*s'", buflen, buflen, buffer);
 
     if ((len = sendPacket((uint8_t *)buffer, buflen)) != -1) {
@@ -185,6 +199,11 @@ int main(int argc, char *argv[])
         ret_status = EXIT_FAILURE;
     }
 
+    sig_msgParse(buffer, &msg_resp);
+    sig_msgPrint(msg_resp, buffer, sizeof(buffer));
+
+    printf("MSG Response: %s\n", buffer);
+
     fcntl(sock, F_SETFL, O_NONBLOCK);
 
 _exit:
@@ -192,6 +211,9 @@ _exit:
         shutdown(sock, SHUT_RDWR);
         close(sock);
     }
+
+    sig_msgDestroy(msg_req);
+    sig_msgDestroy(msg_resp);
 
     return ret_status;
 }
