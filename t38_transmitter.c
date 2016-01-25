@@ -15,13 +15,17 @@
 #include <stdint.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <stdint.h>
 
 #define  IP4_MAX_LEN 15
 #define  PORT_NUM 44444
 
+#define  SETUP_MSG "SETUP 000001 GG 192.168.23.20:44444 192.168.23.20:55555"
+
 int gl_sock;
 
-
+struct sockaddr_in remote_addr;
+socklen_t rem_addr_len = sizeof(remote_addr);
 
 void sigint_handler(int sig) {
     printf("SIGINT handler: close socket.\n");
@@ -66,19 +70,70 @@ static int getHostAddr(char *ip, char *port, struct sockaddr_in *sa)
     return n;
 }
 
+static int sendPacket(const uint8_t *buf, int size)
+{
+    return sendto(gl_sock, buf, size, 0, (struct sockaddr *)&remote_addr,
+                      sizeof(remote_addr));
+}
+
+static int recvPacket(uint8_t *buf, int size)
+{
+    return recvfrom(gl_sock, buf, size, 0, (struct sockaddr *)&remote_addr,
+                        (socklen_t *)&rem_addr_len);
+}
+
+static int socket_init(char *ip, uint16_t port)
+{
+    struct sockaddr_in local_addr;
+    int sock = -1;
+    int ret_val = 0;
+    int reuse = 1;
+
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_addr.s_addr = inet_addr(ip);
+    local_addr.sin_port = htons(port);
+
+    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("socket() failed");
+        ret_val = -1;
+        goto _exit;
+    }
+
+    signal(SIGINT, &sigint_handler);
+
+    gl_sock = sock;
+
+    printf("Client socket created. fd: %d\n", sock);
+
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt() failed");
+        ret_val = -2;
+        goto _exit;
+    }
+
+    if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        perror("bind() failed");
+        ret_val = -3;
+        goto _exit;
+    }
+
+    ret_val = sock;
+
+_exit:
+    return ret_val;
+}
+
 int main(int argc, char *argv[])
 {
-    int sock = -1;
-    int ret_status = 0;
-    struct sockaddr_in local_addr;
-    struct sockaddr_in remote_addr;
-    int reuse = 1;
+
+    int ret_status;
     int /*i,*/ res;
     char local_ip[IP4_MAX_LEN], remote_ip[IP4_MAX_LEN];
     unsigned local_port = PORT_NUM, remote_port;
-    char buf[1024] = {0};
+    char buffer[256];
+    int buflen;
     int len;
-    socklen_t rem_addr_len = sizeof(remote_addr);
+    int sock;
 
     if (argc < 3) {
         printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT]\n");
@@ -90,9 +145,10 @@ int main(int argc, char *argv[])
 
     printf("Local IP is '%s:%d'\n", local_ip, local_port);
 
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = inet_addr(local_ip);
-    local_addr.sin_port = htons(local_port);
+    if((sock = socket_init(local_ip, local_port)) < 0) {
+        ret_status = EXIT_FAILURE;
+        goto _exit;
+    }
 
     if ((res = getHostAddr(argv[1], argv[2], &remote_addr))) {
         printf("getaddrinfo() error: %s\n", gai_strerror(res));
@@ -105,57 +161,31 @@ int main(int argc, char *argv[])
 
     printf("Remote IP is '%s:%d'\n", remote_ip, remote_port);
 
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        perror("socket() failed");
-        ret_status = EXIT_FAILURE;
-        goto _exit;
-    }
-
-//    fcntl(sock, F_SETFL, O_NONBLOCK);
-
-    signal(SIGINT, &sigint_handler);
-
-    gl_sock = sock;
-
-    printf("Client socket created. fd: %d\n", sock);
-
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt() failed");
-        ret_status = EXIT_FAILURE;
-        goto _exit;
-    }
-
-    if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
-        perror("bind() failed");
-        ret_status = EXIT_FAILURE;
-        goto _exit;
-    }
-
-    char buffer[256];
-    sprintf(buffer, "EROR 12345678987654321 INTERNAL_ERR\r\n");
-    int buflen = strlen(buffer);
+    sprintf(buffer, "%s\r\n", SETUP_MSG);
+    buflen = strlen(buffer);
 
     printf("buffer_len: %d buffer: '%.*s'", buflen, buflen, buffer);
 
-    if ((len = sendto(sock, buffer, buflen, 0, (struct sockaddr *)&remote_addr,
-                      sizeof(remote_addr)) != -1)) {
-        printf("Data sent to %s:%d: len=%d buf='%s'\n", remote_ip, remote_port,
+    if ((len = sendPacket((uint8_t *)buffer, buflen)) != -1) {
+        printf("Data sent to %s:%d: len=%d buf='%s'\n",
+               inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
                buflen, buffer);
     } else {
-        perror("sendto() failed");
+        perror("sendPacket() failed");
         ret_status = EXIT_FAILURE;
         goto _exit;
     }
 
-    if ((len = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr *)&remote_addr,
-                        (socklen_t *)&rem_addr_len)) != -1) {
+    if ((len = recvPacket((uint8_t *)buffer, sizeof(buffer))) != -1) {
         printf("Data received form %s:%d len=%d buf='%s'\n",
                inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
-               len, buf);
+               len, buffer);
     } else {
         perror("recvfrom() failed");
         ret_status = EXIT_FAILURE;
     }
+
+    fcntl(sock, F_SETFL, O_NONBLOCK);
 
 _exit:
     if (sock > -1) {
