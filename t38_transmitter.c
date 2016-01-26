@@ -25,8 +25,9 @@
 #define  PORT_NUM 44444
 
 #define  SETUP_MSG "SETUP 000001 GG 192.168.23.20:44444 192.168.23.20:55555"
-#define  FAX_SEND_PORT 44433
-#define  FAX_RECV_PORT 44455
+#define  FAX_SEND_PORT_START 44433
+#define  FAX_RECV_PORT_START 44533
+#define  FAX_MAX_SESSION_CNT 20
 
 
 int gl_sock;
@@ -134,18 +135,28 @@ int main(int argc, char *argv[])
 {
 
     int ret_status;
-    int /*i,*/ res;
+    int i, res;
     char local_ip[IP4_MAX_LEN], remote_ip[IP4_MAX_LEN];
     unsigned local_port = PORT_NUM, remote_port;
     char buffer[512];
     int buflen;
     int len;
+    int ses_count = 0;
     int sock;
+    char call_id_str[20];
     sig_message_t *msg_req = NULL;
     sig_message_t *msg_resp = NULL;
 
-    if (argc < 3) {
-        printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT]\n");
+    if (argc < 4) {
+        printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT] [SESSION_COUNT]\n");
+        ret_status = EXIT_FAILURE;
+        goto _exit;
+    }
+
+    ses_count = strtoul(argv[3], NULL, 10);
+
+    if (ses_count > FAX_MAX_SESSION_CNT) {
+        printf("Too many sessions! No more then %d supported\n", FAX_MAX_SESSION_CNT);
         ret_status = EXIT_FAILURE;
         goto _exit;
     }
@@ -154,10 +165,11 @@ int main(int argc, char *argv[])
 
     printf("Local IP is '%s:%d'\n", local_ip, local_port);
 
-    if((sock = socket_init(local_ip, local_port)) < 0) {
+    if ((sock = socket_init(local_ip, local_port)) < 0) {
         ret_status = EXIT_FAILURE;
         goto _exit;
     }
+
 
     if ((res = getHostAddr(argv[1], argv[2], &remote_addr))) {
         printf("getaddrinfo() error: %s\n", gai_strerror(res));
@@ -165,55 +177,63 @@ int main(int argc, char *argv[])
         goto _exit;
     }
 
+
     strcpy(remote_ip, inet_ntoa(remote_addr.sin_addr));
     remote_port = ntohs(remote_addr.sin_port);
 
     printf("Remote IP is '%s:%d'\n", remote_ip, remote_port);
 
-    sig_msgCreateSetup("00001",
-                       ntohl(inet_addr(local_ip)), FAX_SEND_PORT,
-                       ntohl(inet_addr(local_ip)), FAX_RECV_PORT,
-                       FAX_MODE_GW_GW, (sig_message_setup_t **)(&msg_req));
+    for(i = 0; i < ses_count; i++)
+    {
+        sprintf(call_id_str, "0000000%d", i);
 
-    sig_msgCompose(msg_req, buffer, sizeof(buffer));
+        sig_msgCreateSetup(call_id_str,
+                           ntohl(inet_addr(local_ip)), FAX_SEND_PORT_START + i,
+                           ntohl(inet_addr(local_ip)), FAX_RECV_PORT_START + i,
+                           FAX_MODE_GW_GW, (sig_message_setup_t **)(&msg_req));
 
-    buflen = strlen(buffer);
-    printf("buffer_len: %d buffer: '%.*s'", buflen, buflen, buffer);
+        sig_msgCompose(msg_req, buffer, sizeof(buffer));
 
-    if ((len = sendPacket((uint8_t *)buffer, buflen)) != -1) {
-        printf("Data sent to %s:%d: len=%d buf='%s'\n",
-               inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
-               buflen, buffer);
-    } else {
-        perror("sendPacket() failed");
-        ret_status = EXIT_FAILURE;
-        goto _exit;
+        buflen = strlen(buffer);
+        printf("buffer_len: %d buffer: '%.*s'", buflen, buflen, buffer);
+
+        if ((len = sendPacket((uint8_t *)buffer, buflen)) != -1) {
+            printf("Data sent to %s:%d: len=%d buf='%s'\n",
+                   inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
+                   buflen, buffer);
+        } else {
+            perror("sendPacket() failed");
+            ret_status = EXIT_FAILURE;
+            goto _exit;
+        }
+
+        if ((len = recvPacket((uint8_t *)buffer, sizeof(buffer))) != -1) {
+            printf("Data received form %s:%d len=%d buf='%s'\n",
+                   inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
+                   len, buffer);
+        } else {
+            perror("recvfrom() failed");
+            ret_status = EXIT_FAILURE;
+        }
+
+        sig_msgParse(buffer, &msg_resp);
+        sig_msgPrint(msg_resp, buffer, sizeof(buffer));
+
+        printf("MSG Response: %s\n", buffer);
+
+        sig_msgDestroy(msg_req);
+        sig_msgDestroy(msg_resp);
+
+        sleep(1);
     }
 
-    if ((len = recvPacket((uint8_t *)buffer, sizeof(buffer))) != -1) {
-        printf("Data received form %s:%d len=%d buf='%s'\n",
-               inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
-               len, buffer);
-    } else {
-        perror("recvfrom() failed");
-        ret_status = EXIT_FAILURE;
-    }
-
-    sig_msgParse(buffer, &msg_resp);
-    sig_msgPrint(msg_resp, buffer, sizeof(buffer));
-
-    printf("MSG Response: %s\n", buffer);
-
-    fcntl(sock, F_SETFL, O_NONBLOCK);
+//    fcntl(sock, F_SETFL, O_NONBLOCK);
 
 _exit:
     if (sock > -1) {
         shutdown(sock, SHUT_RDWR);
         close(sock);
     }
-
-    sig_msgDestroy(msg_req);
-    sig_msgDestroy(msg_resp);
 
     return ret_status;
 }
