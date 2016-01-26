@@ -5,11 +5,6 @@
  *  and also ITU official documentation (T30, T38, T37).
  *
  */
-
-
-#include "fax.h"
-#include "call.h"
-
 #include <unistd.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -17,6 +12,9 @@
 #include <netinet/in.h>
 //#include <spandsp/t4_rx.h>
 #include <sys/poll.h>
+#include <pthread.h>
+
+#include "fax.h"
 
 #define THIS_FILE "fax.c"
 
@@ -31,12 +29,12 @@
 #define DEF_T38_VENDOR_INFO       "0 0 0"
 #define DEF_T38_UDP_EC            "t38UDPRedundancy"
 
-#define DEF_FAX_OUTPUT_TIFF_FILE  "fax.tif"
+#define DEF_FAX_INPUT_TIFF_FILE  "fax.tif"
 #define DEF_FAX_IDENT             "MSR_FAX"
 #define DEF_FAX_HEADER            "FAX_DEFAULT_HEADER"
 #define DEF_FAX_VERBOSE           1
 #define DEF_FAX_USE_ECM           1
-#define DEF_FAX_DISABLE_V17       1
+#define DEF_FAX_DISABLE_V17       0
 
 #define MAX_FEC_ENTRIES           4
 #define MAX_FEC_SPAN              4
@@ -66,7 +64,6 @@ static int socket_init(struct sockaddr_in *addr, fax_session_t *f_session)
         return -1;
     }
 
-
     res = setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
     if (res < 0) {
         printf("fax: %s: setsockopt() error\n", __func__);
@@ -80,6 +77,16 @@ static int socket_init(struct sockaddr_in *addr, fax_session_t *f_session)
     }
 
     f_session->socket_fd = sock_fd;
+
+    if(f_session->pvt.caller)
+    {
+        f_session->rem_addr = malloc(sizeof(struct sockaddr_in));
+        f_session->rem_addr->sin_family = AF_INET;
+        f_session->rem_addr->sin_port = htons(f_session->remote_port);
+        f_session->rem_addr->sin_addr.s_addr = htonl(f_session->remote_ip);
+    }
+
+    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
 
     return sock_fd;
 }
@@ -227,9 +234,9 @@ static int phase_b_handler(t30_state_t *s, void *user_data, int result)
 	printf("fax: Transfer Rate:     %i\n", t30_stats.bit_rate);
 
 	printf("fax: ECM status        %s\n", (t30_stats.error_correcting_mode) ? "on" : "off");
-	printf("fax: remote country:   %s\n", (t30_get_rx_country(s) ? (t30_get_rx_country(s) : "");
-	printf("fax: remote vendor:    %s\n", (t30_get_rx_vendor(s) ? (t30_get_rx_vendor(s) : "");
-	printf("fax: remote model:     %s\n", (t30_get_rx_model(s) ? (t30_get_rx_model(s) : "");
+	printf("fax: remote country:   %s\n", (t30_get_rx_country(s) ? (t30_get_rx_country(s)) : ""));
+	printf("fax: remote vendor:    %s\n", (t30_get_rx_vendor(s) ? (t30_get_rx_vendor(s)) : ""));
+	printf("fax: remote model:     %s\n", (t30_get_rx_model(s) ? (t30_get_rx_model(s)) : ""));
 
 	printf("fax: ==============================================================================\n");
 
@@ -296,9 +303,9 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 	printf("fax: Transfer Rate:     %i\n", t.bit_rate);
 
 	printf("fax: ECM status        %s\n", (t.error_correcting_mode) ? "on" : "off");
-	printf("fax: remote country:   %s\n", (t30_get_rx_country(s) ? (t30_get_rx_country(s) : "");
-	printf("fax: remote vendor:    %s\n", (t30_get_rx_vendor(s) ? (t30_get_rx_vendor(s) : "");
-	printf("fax: remote model:     %s\n", (t30_get_rx_model(s) ? (t30_get_rx_model(s) : "");
+	printf("fax: remote country:   %s\n", (t30_get_rx_country(s) ? (t30_get_rx_country(s)) : ""));
+	printf("fax: remote vendor:    %s\n", (t30_get_rx_vendor(s) ? (t30_get_rx_vendor(s)) : ""));
+	printf("fax: remote model:     %s\n", (t30_get_rx_model(s) ? (t30_get_rx_model(s)) : ""));
 
 	printf("fax: ==============================================================================\n");
 
@@ -306,12 +313,12 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 	   Set our channel variables, variables are also used in event
 	 */
 
-	f_session->pvt.done = PJ_TRUE;
+	f_session->pvt.done = 1;
 
 	if (result == T30_ERR_OK)
-		f_session->fax_success = PJ_TRUE;
+		f_session->fax_success = 1;
 	else
-		f_session->fax_success = PJ_FALSE;
+		f_session->fax_success = 0;
 }
 
 
@@ -339,7 +346,7 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
 			if (t38_terminal_init(t38, f_session->pvt.caller, t38_tx_packet_handler,
 								  f_session) == NULL) {
 				printf("fax: Cannot initialize T.38 structs\n");
-				return PJ_FALSE;
+				return 0;
 			}
 
 			f_session->pvt.t38_core = t38_terminal_get_t38_core_state(t38);
@@ -350,7 +357,7 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
 						   fec_span, fec_entries, (udptl_rx_packet_handler_t *) t38_core_rx_ifp_packet,
 						   (void *) f_session->pvt.t38_core) == NULL) {
 				printf("fax: Cannot initialize UDPTL structs\n");
-				return PJ_FALSE;
+				return 0;
 			}
 
 			span_log_set_message_handler(t38_terminal_get_logging_state(t38),
@@ -370,7 +377,7 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
             break;
         case FAX_TRANSPORT_AUDIO_MOD:
         default:
-            return PJ_FALSE;
+            return 0;
             break;
     }
 
@@ -426,9 +433,13 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
 									   | T30_SUPPORT_T4_2D_COMPRESSION);
 	}
 
-	t30_set_rx_file(t30, f_session->pvt.filename, -1);
+	if (f_session->pvt.caller) {
+		t30_set_tx_file(t30, f_session->pvt.filename, -1, -1);
+	} else {
+		t30_set_rx_file(t30, f_session->pvt.filename, -1);
+	}
 
-	return PJ_SUCCESS;
+	return 0;
 }
 
 
@@ -437,35 +448,14 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
  */
 static int spanfax_destroy(fax_session_t *f_session)
 {
-	int terminate;
 	t30_state_t *t30;
 	printf("fax: %s: start!\n", __func__);
-//	if (f_session->fax_state) {
-//		if (f_session->t38_state) {
-//			terminate = 0;
-//		} else {
-//			terminate = 1;
-//		}
-
-//		t30 = fax_get_t30_state(f_session->fax_state);
-//		if (terminate && t30) {
-//			t30_terminate(t30);
-//		}
-
-//		fax_release(f_session->fax_state);
-//	}
 
 	if (f_session->pvt.t38_state) {
 
-		if (f_session->pvt.t38_state) {
-			terminate = 1;
-		} else {
-			terminate = 0;
-		}
-
 		t30 = t38_terminal_get_t30_state(f_session->pvt.t38_state);
 
-		if (terminate && t30) {
+		if (t30) {
 			t30_terminate(t30);
 		}
 
@@ -475,7 +465,7 @@ static int spanfax_destroy(fax_session_t *f_session)
 	if (f_session->pvt.udptl_state) {
 		udptl_release(f_session->pvt.udptl_state);
 	}
-	return PJ_SUCCESS;
+	return 0;
 }
 
 
@@ -506,7 +496,7 @@ static int configure_t38(fax_session_t *f_session)
 
 	t38_set_data_rate_management_method(f_session->pvt.t38_core, method);
 
-	return PJ_SUCCESS;
+	return 0;
 }
 
 
@@ -515,11 +505,10 @@ static int configure_t38(fax_session_t *f_session)
  *  We need to receive UDP (with UDPTL) packet and feed it to spandsp and also
  *  get UDPTL from spandsp and send them to remote IAF
  */
-int fax_worker_thread(void *data)
+void *fax_worker_thread(void *data)
 {
-    call_state_t *call = (call_state_t *)data;
+    fax_session_t *fax_session = (fax_session_t *)data;
     struct sockaddr_in local_addr;
-    int return_status = 0;
     int ret_val = 0;
     int bytes_received = 0;
     const int poll_timeout = 20;
@@ -528,9 +517,9 @@ int fax_worker_thread(void *data)
 
     printf("fax: Starting T.38 FAX handling\n");
 
-    fax_params_init(&call->fax_session);
+    fax_params_init(fax_session);
 
-    ret_val = socket_init(&local_addr, &call->fax_session);
+    ret_val = socket_init(&local_addr, fax_session);
     if (ret_val < 0) {
         printf("fax: Fax socket init failed\n");
         goto thread_finish;
@@ -539,20 +528,15 @@ int fax_worker_thread(void *data)
     fds.fd = ret_val;
     fds.events = POLLIN;
 
-    fax_params_set_default(&call->fax_session);
-    if (spanfax_init(&call->fax_session, FAX_TRANSPORT_T38_MOD) != PJ_SUCCESS) {
+    fax_params_set_default(fax_session);
+    if (spanfax_init(fax_session, FAX_TRANSPORT_T38_MOD) != 0) {
         printf("fax: spanfax_init() ERROR\n");
-        return_status = 1;
         goto thread_finish;
     }
 
-    configure_t38(&call->fax_session);
-    bytes_received = receive_frame(&call->fax_session, msg_buffer, MAX_MSG_SIZE);
-//    t38_terminal_send_timeout(call->fax_session.pvt.t38_state, FRAMES_PER_CHUNK);
+    configure_t38(fax_session);
 
-    fcntl(call->fax_session.socket_fd, F_SETFL, O_NONBLOCK);
-
-    while (!call->fax_session.pvt.done) {
+    while (!fax_session->pvt.done) {
 
         /*
          * All we need to do here is:
@@ -568,7 +552,7 @@ int fax_worker_thread(void *data)
 
         if (fds.revents & POLLIN) {
 
-            bytes_received = receive_frame(&call->fax_session, msg_buffer, MAX_MSG_SIZE);
+            bytes_received = receive_frame(fax_session, msg_buffer, MAX_MSG_SIZE);
             printf("fax: Packet RECEIVED (size: %d)\n", bytes_received);
             if (bytes_received == 0) continue;
             if (bytes_received == -1) {
@@ -576,19 +560,19 @@ int fax_worker_thread(void *data)
                 break;
             }
 
-            ret_val = udptl_rx_packet(call->fax_session.pvt.udptl_state,
+            ret_val = udptl_rx_packet(fax_session->pvt.udptl_state,
                                       msg_buffer, bytes_received);
             if (ret_val) printf("fax: udptl_rx_packet() ERROR\n");
         }
 
-        t38_terminal_send_timeout(call->fax_session.pvt.t38_state, FRAMES_PER_CHUNK);
+        t38_terminal_send_timeout(fax_session->pvt.t38_state, FRAMES_PER_CHUNK);
     }
 
 thread_finish:
-    spanfax_destroy(&call->fax_session);
-    fax_params_destroy(&call->fax_session);
+    spanfax_destroy(fax_session);
+    fax_params_destroy(fax_session);
 
-    return return_status;
+    pthread_exit(NULL);
 }
 
 
@@ -599,7 +583,6 @@ void fax_params_init(fax_session_t *f_session)
     f_session->pvt.t38_state = malloc(sizeof(t38_terminal_state_t));
     f_session->pvt.udptl_state = malloc(sizeof(udptl_state_t));
 
-    f_session->pvt.filename = NULL;
     f_session->pvt.header = NULL;
     f_session->pvt.ident = NULL;
 
@@ -614,12 +597,11 @@ void fax_params_init(fax_session_t *f_session)
 
 void fax_params_destroy(fax_session_t *f_session)
 {
-    printf("fax: Destroing fax parameters\n", __func__);
+    printf("fax: %s: Destroing fax parameters\n", __func__);
 
     if (f_session->pvt.t38_state) free(f_session->pvt.t38_state);
     if (f_session->pvt.udptl_state) free(f_session->pvt.udptl_state);
 
-    if (f_session->pvt.filename) free(f_session->pvt.filename);
     if (f_session->pvt.header) free(f_session->pvt.header);
     if (f_session->pvt.ident) free(f_session->pvt.ident);
 
@@ -633,11 +615,9 @@ void fax_params_destroy(fax_session_t *f_session)
 
 void fax_params_set_default(fax_session_t *f_session)
 {
-    printf("fax: Setting default fax parameters\n", __func__);
+    printf("fax: %s: Setting default fax parameters\n", __func__);
 
-    f_session->pvt.caller = 0;
     f_session->pvt.disable_v17 = DEF_FAX_DISABLE_V17;
-    f_session->pvt.filename = strdup(DEF_FAX_OUTPUT_TIFF_FILE);
     f_session->pvt.done = 0;
     f_session->pvt.ident = strdup(DEF_FAX_IDENT);
     f_session->pvt.header = strdup(DEF_FAX_HEADER);

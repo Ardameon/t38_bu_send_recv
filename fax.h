@@ -19,7 +19,7 @@ typedef struct fax_params_s {
         t38_core_state_t     *t38_core;
         udptl_state_t        *udptl_state;
 
-        char *filename;
+        char filename[64];
         char *ident;
         char *header;
 
@@ -49,17 +49,25 @@ typedef struct fax_params_s {
 
     int socket_fd;
     uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t remote_ip;
     struct sockaddr_in *rem_addr;
 
     uint8_t fax_success;
 
 } fax_session_t;
 
+typedef struct ses_param_t {
+    uint8_t  caller;
+
+    fax_session_t fax_session;
+} ses_param_t;
+
 void fax_params_init(fax_session_t *f_session);
 void fax_params_destroy(fax_session_t *f_session);
 void fax_params_set_default(fax_session_t *f_session);
 
-int fax_worker_thread(void *data);
+void *fax_worker_thread(void *data);
 
 
 
