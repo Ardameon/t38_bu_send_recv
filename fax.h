@@ -55,6 +55,9 @@ typedef struct fax_params_s {
 
     uint8_t fax_success;
 
+    char call_id[64];
+    char log_tag[64];
+
 } fax_session_t;
 
 typedef struct ses_param_t {

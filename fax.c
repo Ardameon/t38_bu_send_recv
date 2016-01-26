@@ -26,11 +26,10 @@
 #define DEF_T38_RATE_MANAGEMENT   "transferredTCF"
 #define DEF_T38_MAX_BUFFER        72
 #define DEF_T38_MAX_DATAGRAM      316
-#define DEF_T38_VENDOR_INFO       "0 0 0"
+#define DEF_T38_VENDOR_INFO       "Tyryshkin M V"
 #define DEF_T38_UDP_EC            "t38UDPRedundancy"
 
-#define DEF_FAX_INPUT_TIFF_FILE  "fax.tif"
-#define DEF_FAX_IDENT             "MSR_FAX"
+#define DEF_FAX_IDENT             "FAX_TRANSMITTER"
 #define DEF_FAX_HEADER            "FAX_DEFAULT_HEADER"
 #define DEF_FAX_VERBOSE           1
 #define DEF_FAX_USE_ECM           1
@@ -85,8 +84,6 @@ static int socket_init(struct sockaddr_in *addr, fax_session_t *f_session)
         f_session->rem_addr->sin_port = htons(f_session->remote_port);
         f_session->rem_addr->sin_addr.s_addr = htonl(f_session->remote_ip);
     }
-
-    fcntl(sock_fd, F_SETFL, O_NONBLOCK);
 
     return sock_fd;
 }
@@ -217,8 +214,7 @@ static int phase_b_handler(t30_state_t *s, void *user_data, int result)
 	const char *local_ident;
 	const char *far_ident;
 	const char *tmp;
-//	fax_session_t *f_session;
-//	f_session = (fax_session_t *)user_data;
+	fax_session_t *f_session = (fax_session_t *)user_data;
 
 	t30_get_transfer_statistics(s, &t30_stats);
 
@@ -227,7 +223,8 @@ static int phase_b_handler(t30_state_t *s, void *user_data, int result)
 	tmp = t30_get_rx_ident(s);
 	far_ident = tmp ? tmp : "";
 
-	printf("fax: Phase B handler\n");
+	printf("fax: Phase B handler (Call: '%s' %s)\n", f_session->call_id,
+		   f_session->pvt.caller ? "sender" : "receiver");
 	printf("fax: === Negotiation Result =======================================================\n");
 	printf("fax: Remote station id: %s\n", far_ident);
 	printf("fax: Local station id:  %s\n", local_ident);
@@ -247,14 +244,16 @@ static int phase_d_handler(t30_state_t *s, void *user_data, int msg)
 {
 	t30_stats_t t30_stats;
 
-//	fax_session_t *f_session;
-//	f_session = (fax_session_t *) user_data;
+	fax_session_t *f_session = (fax_session_t *)user_data;
 
 	t30_get_transfer_statistics(s, &t30_stats);
 
-	printf("fax: Phase D handler\n");
-	printf("fax: ==== Page %s===========================================================\n", "Received ");
-	printf("fax: Page no = %d\n", t30_stats.pages_rx);
+	printf("fax: Phase D handler (Call: '%s' %s)\n", f_session->call_id,
+		   f_session->pvt.caller ? "sender" : "receiver");
+	printf("fax: ==== Page %s ===========================================================\n",
+		   f_session->pvt.caller ? "Sent" : "Received");
+	printf("fax: Page no = %d\n", f_session->pvt.caller ?
+			   t30_stats.pages_tx : t30_stats.pages_rx);
 	printf("fax: Image size = %d x %d pixels\n", t30_stats.width, t30_stats.length);
 	printf("fax: Image resolution = %d/m x %d/m\n", t30_stats.x_resolution, t30_stats.y_resolution);
 	printf("fax: Compressed image size = %d bytes\n", t30_stats.image_size);
@@ -286,10 +285,13 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 	tmp = t30_get_rx_ident(s);
 	far_ident = tmp ? tmp : "";
 
+	printf("fax: Phase E handler (Call: '%s' %s)\n", f_session->call_id,
+		   f_session->pvt.caller ? "sender" : "receiver");
 	printf("fax: ==============================================================================\n");
 
 	if (result == T30_ERR_OK) {
-		printf("fax: Fax successfully received\n");
+		printf("fax: Fax successfully %s\n", f_session->pvt.caller ?
+				   "sent" : "received");
 	} else {
 		printf("fax: Fax processing not successful - result (%d) %s\n", result,
 						  t30_completion_code_to_str(result));
@@ -297,7 +299,8 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 
 	printf("fax: Remote station id: %s\n", far_ident);
 	printf("fax: Local station id:  %s\n", local_ident);
-	printf("fax: Pages transferred: %i\n", t.pages_rx);
+	printf("fax: Pages transferred: %i\n", f_session->pvt.caller ?
+			   t.pages_tx : t.pages_rx);
 	printf("fax: Total fax pages:   %i\n", t.pages_in_file);
 	printf("fax: Image resolution:  %ix%i\n", t.x_resolution, t.y_resolution);
 	printf("fax: Transfer Rate:     %i\n", t.bit_rate);
@@ -328,7 +331,10 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode)
 {
     t38_terminal_state_t *t38;
+    t38_core_state_t *t38_core;
     t30_state_t *t30;
+    logging_state_t *logging;
+    int log_level;
 
     int fec_entries = DEFAULT_FEC_ENTRIES;
     int fec_span = DEFAULT_FEC_SPAN;
@@ -338,18 +344,18 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
     switch(trans_mode) {
         case FAX_TRANSPORT_T38_MOD:
 
-            t38 = f_session->pvt.t38_state;
-            t30 = t38_terminal_get_t30_state(t38);
+            memset(f_session->pvt.t38_state, 0, sizeof(t38_terminal_state_t));
 
-            memset(t38, 0, sizeof(t38_terminal_state_t));
-
-			if (t38_terminal_init(t38, f_session->pvt.caller, t38_tx_packet_handler,
-								  f_session) == NULL) {
+			if (t38_terminal_init(f_session->pvt.t38_state, f_session->pvt.caller,
+								  t38_tx_packet_handler, f_session) == NULL) {
 				printf("fax: Cannot initialize T.38 structs\n");
 				return 0;
 			}
 
-			f_session->pvt.t38_core = t38_terminal_get_t38_core_state(t38);
+			t38 = f_session->pvt.t38_state;
+			t30 = t38_terminal_get_t30_state(t38);
+
+			t38_core = f_session->pvt.t38_core = t38_terminal_get_t38_core_state(t38);
 			t38_terminal_set_config(t38, 0);
 			t38_terminal_set_tep_mode(t38, 0);
 
@@ -360,18 +366,25 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
 				return 0;
 			}
 
-			span_log_set_message_handler(t38_terminal_get_logging_state(t38),
-										 spanfax_log_message);
-			span_log_set_message_handler(t30_get_logging_state(t30),
-										 spanfax_log_message);
-
 			if (f_session->pvt.verbose) {
-				span_log_set_level(t38_core_get_logging_state(f_session->pvt.t38_core),
-								   SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
-				span_log_set_level(t38_terminal_get_logging_state(t38),
-								   SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
-				span_log_set_level(t30_get_logging_state(t30),
-								   SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
+				log_level = SPAN_LOG_DEBUG | SPAN_LOG_SHOW_TAG |
+						SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL |
+						SPAN_LOG_FLOW;
+
+				logging = t38_terminal_get_logging_state(t38);
+				span_log_set_message_handler(logging, spanfax_log_message);
+				span_log_set_level(logging, log_level);
+				span_log_set_tag(logging, f_session->log_tag);
+
+				logging = t38_core_get_logging_state(t38_core);
+				span_log_set_message_handler(logging, spanfax_log_message);
+				span_log_set_level(logging, log_level);
+				span_log_set_tag(logging, f_session->log_tag);
+
+				logging = t30_get_logging_state(t30);
+				span_log_set_message_handler(logging, spanfax_log_message);
+				span_log_set_level(logging, log_level);
+				span_log_set_tag(logging, f_session->log_tag);
 			}
 
             break;
@@ -382,6 +395,7 @@ static int spanfax_init(fax_session_t *f_session, fax_transport_mod_e trans_mode
     }
 
 	/* All the things which are common to audio and T.38 FAX setup */
+
 	t30_set_tx_ident(t30, f_session->pvt.ident);
 	t30_set_tx_page_header_info(t30, f_session->pvt.header);
 
@@ -514,8 +528,12 @@ void *fax_worker_thread(void *data)
     const int poll_timeout = 20;
     struct pollfd fds;
 
+    struct in_addr addr;
+    addr.s_addr = htonl(fax_session->remote_ip);
 
-    printf("fax: Starting T.38 FAX handling\n");
+
+    printf("fax: Starting T.38 FAX handling: local_port: %d remote_addr:%s:%d\n",
+           fax_session->local_port, inet_ntoa(addr), fax_session->remote_port);
 
     fax_params_init(fax_session);
 
@@ -535,6 +553,13 @@ void *fax_worker_thread(void *data)
     }
 
     configure_t38(fax_session);
+
+    if(!fax_session->pvt.caller)
+    {
+        bytes_received = receive_frame(fax_session, msg_buffer, MAX_MSG_SIZE);
+    }
+
+    fcntl(fax_session->socket_fd, F_SETFL, O_NONBLOCK);
 
     while (!fax_session->pvt.done) {
 
@@ -571,6 +596,8 @@ void *fax_worker_thread(void *data)
 thread_finish:
     spanfax_destroy(fax_session);
     fax_params_destroy(fax_session);
+
+    close(fds.fd);
 
     pthread_exit(NULL);
 }
@@ -616,10 +643,15 @@ void fax_params_destroy(fax_session_t *f_session)
 void fax_params_set_default(fax_session_t *f_session)
 {
     printf("fax: %s: Setting default fax parameters\n", __func__);
+    char ident_str[256];
 
     f_session->pvt.disable_v17 = DEF_FAX_DISABLE_V17;
     f_session->pvt.done = 0;
-    f_session->pvt.ident = strdup(DEF_FAX_IDENT);
+
+    sprintf(ident_str, "%s: %s %s", DEF_FAX_IDENT, f_session->call_id,
+            f_session->pvt.caller ? "sender" : "receiver");
+    f_session->pvt.ident = strdup(ident_str);
+
     f_session->pvt.header = strdup(DEF_FAX_HEADER);
     f_session->pvt.verbose = DEF_FAX_VERBOSE;
     f_session->pvt.use_ecm = DEF_FAX_USE_ECM;
@@ -635,6 +667,9 @@ void fax_params_set_default(fax_session_t *f_session)
     f_session->t38_options.T38FaxUdpEC = strdup(DEF_T38_UDP_EC);
     f_session->t38_options.T38MaxBitRate = DEF_T38_MAX_BITRATE;
     f_session->t38_options.T38VendorInfo = strdup(DEF_T38_VENDOR_INFO);
+
+    sprintf(f_session->log_tag, "%s-%s", f_session->call_id,
+            f_session->pvt.caller ? "SENDER" : "RECVER");
 }
 
 
