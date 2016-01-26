@@ -16,8 +16,10 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <sys/stat.h>
 
-//#include "fax.h"
+#include "fax.h"
 #include "fax_bu.h"
 #include "msg_proc.h"
 
@@ -27,7 +29,7 @@
 #define  SETUP_MSG "SETUP 000001 GG 192.168.23.20:44444 192.168.23.20:55555"
 #define  FAX_SEND_PORT_START 44433
 #define  FAX_RECV_PORT_START 44533
-#define  FAX_MAX_SESSION_CNT 20
+#define  FAX_MAX_SESSION_CNT 40
 
 
 int gl_sock;
@@ -131,24 +133,59 @@ _exit:
     return ret_val;
 }
 
+typedef enum {
+    RECV,
+    SEND
+} ses_mode_e;
+
+static pthread_t start_fax_session(ses_mode_e mode, const char *call_id,
+                                   uint16_t local_port, uint32_t remote_ip,
+                                   uint16_t remote_port, const char *filename,
+                                   fax_session_t **f_session)
+{
+    pthread_t thread = -1;
+    fax_session_t *fax_session;
+
+    fax_session = malloc(sizeof(fax_session_t));
+
+    fax_session->pvt.caller = mode;
+    strcpy(fax_session->pvt.filename, filename);
+    fax_session->local_port = local_port;
+
+    if(remote_ip) fax_session->remote_ip = remote_ip;
+    if(remote_port) fax_session->remote_port = remote_port;
+    strcpy(fax_session->call_id, call_id);
+
+    pthread_create(&thread, NULL, &fax_worker_thread, fax_session);
+
+    *f_session = fax_session;
+
+    return thread;
+}
+
 int main(int argc, char *argv[])
 {
 
     int ret_status;
     int i, res;
     char local_ip[IP4_MAX_LEN], remote_ip[IP4_MAX_LEN];
-    unsigned local_port = PORT_NUM, remote_port;
+    uint16_t local_port = PORT_NUM, remote_port;
+    uint16_t send_port, recv_port;
     char buffer[512];
+    char tiff_filename[64], recv_filename[64];
     int buflen;
     int len;
     int ses_count = 0;
     int sock;
-    char call_id_str[20];
+    char call_id_str[FAX_MAX_SESSION_CNT];
     sig_message_t *msg_req = NULL;
     sig_message_t *msg_resp = NULL;
+    fax_session_t *f_session[FAX_MAX_SESSION_CNT][2];
+    pthread_t      f_thread[FAX_MAX_SESSION_CNT][2];
+    struct stat st;
 
-    if (argc < 4) {
-        printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT] [SESSION_COUNT]\n");
+    if (argc < 5) {
+        printf("Not enough arguments: [REMOTE_HOST] [REMOTE_PORT] [SESSION_COUNT] [TIFF_FILE_TO_SEND]\n");
         ret_status = EXIT_FAILURE;
         goto _exit;
     }
@@ -161,6 +198,13 @@ int main(int argc, char *argv[])
         goto _exit;
     }
 
+    strncpy(tiff_filename, argv[4], sizeof(tiff_filename));
+    if (stat(tiff_filename, &st)) {
+        printf("Tiff file error ('%s'): %s\n", tiff_filename, strerror(errno));
+        ret_status = EXIT_FAILURE;
+        goto _exit;
+    }
+
     strcpy(local_ip, getLocalIP("eth0"));
 
     printf("Local IP is '%s:%d'\n", local_ip, local_port);
@@ -169,7 +213,6 @@ int main(int argc, char *argv[])
         ret_status = EXIT_FAILURE;
         goto _exit;
     }
-
 
     if ((res = getHostAddr(argv[1], argv[2], &remote_addr))) {
         printf("getaddrinfo() error: %s\n", gai_strerror(res));
@@ -185,12 +228,18 @@ int main(int argc, char *argv[])
 
     for(i = 0; i < ses_count; i++)
     {
-        sprintf(call_id_str, "0000000%d", i);
+        sprintf(call_id_str, "0000000%d", i + 1);
+
+        send_port = FAX_SEND_PORT_START + i;
+        recv_port = FAX_RECV_PORT_START + i;
+
+        f_session[i][0] = f_session[i][1] = NULL;
 
         sig_msgCreateSetup(call_id_str,
-                           ntohl(inet_addr(local_ip)), FAX_SEND_PORT_START + i,
-                           ntohl(inet_addr(local_ip)), FAX_RECV_PORT_START + i,
+                           ntohl(inet_addr(local_ip)), send_port,
+                           ntohl(inet_addr(local_ip)), recv_port,
                            FAX_MODE_GW_GW, (sig_message_setup_t **)(&msg_req));
+
 
         sig_msgCompose(msg_req, buffer, sizeof(buffer));
 
@@ -221,13 +270,38 @@ int main(int argc, char *argv[])
 
         printf("MSG Response: %s\n", buffer);
 
+        /* If we do without fork() - received filed will be distorted
+         *
+         * Most of all - spandsp bug, not sure
+         */
+        if(!fork())
+        {
+            /* Sending thread */
+            f_thread[i][0] = start_fax_session(SEND, call_id_str, send_port,
+                                               ntohl(inet_addr(local_ip)),
+                                               recv_port, tiff_filename,
+                                               &(f_session[i][0]));
+
+
+            sprintf(recv_filename, "received_fax_%02d.tif", i);
+
+            /* Receiving thread */
+            f_thread[i][1] = start_fax_session(RECV, call_id_str, recv_port, 0,
+                                               0, recv_filename,
+                                               &f_session[i][0]);
+
+            pthread_join(f_thread[i][0], NULL);
+            pthread_join(f_thread[i][1], NULL);
+            if(f_session[i][0]) free(f_session[i][0]);
+            if(f_session[i][1]) free(f_session[i][1]);
+            exit(0);
+        }
+
         sig_msgDestroy(msg_req);
         sig_msgDestroy(msg_resp);
 
-        sleep(1);
+//        sleep(1);
     }
-
-//    fcntl(sock, F_SETFL, O_NONBLOCK);
 
 _exit:
     if (sock > -1) {
