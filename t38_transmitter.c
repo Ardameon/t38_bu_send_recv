@@ -170,7 +170,8 @@ int main(int argc, char *argv[])
     int i, res;
     char local_ip[IP4_MAX_LEN], remote_ip[IP4_MAX_LEN];
     uint16_t local_port = PORT_NUM, remote_port;
-    uint16_t send_port, recv_port;
+    uint16_t send_port, recv_port, fax_rem_port;
+    uint32_t fax_rem_ip;
     char buffer[512];
     char tiff_filename[64], recv_filename[64];
     int buflen;
@@ -276,10 +277,15 @@ int main(int argc, char *argv[])
          */
         if(!fork())
         {
+            if(msg_resp->type != FAX_MSG_OK) exit(1);
+
+            fax_rem_ip = ((sig_message_ok_t *)msg_resp)->ip;
+            fax_rem_port = ((sig_message_ok_t *)msg_resp)->port;
+
             /* Sending thread */
             f_thread[i][0] = start_fax_session(SEND, call_id_str, send_port,
-                                               ntohl(inet_addr(local_ip)),
-                                               recv_port, tiff_filename,
+                                               fax_rem_ip, fax_rem_port,
+                                               tiff_filename,
                                                &(f_session[i][0]));
 
 
@@ -292,8 +298,10 @@ int main(int argc, char *argv[])
 
             pthread_join(f_thread[i][0], NULL);
             pthread_join(f_thread[i][1], NULL);
+
             if(f_session[i][0]) free(f_session[i][0]);
             if(f_session[i][1]) free(f_session[i][1]);
+
             exit(0);
         }
 
