@@ -271,22 +271,23 @@ int main(int argc, char *argv[])
 
         printf("MSG Response: %s\n", buffer);
 
-        /* If we do without fork() - received filed will be distorted
+        fax_rem_ip = ((sig_message_ok_t *)msg_resp)->ip;
+        fax_rem_port = ((sig_message_ok_t *)msg_resp)->port;
+
+        /* Sending thread */
+        f_thread[i][0] = start_fax_session(SEND, call_id_str, send_port,
+                                           fax_rem_ip, fax_rem_port,
+                                           tiff_filename,
+                                           &(f_session[i][0]));
+
+        /* If we do without fork() - received filed will be distorted,
+         * don't know why.
          *
          * Most of all - spandsp bug, not sure
          */
         if(!fork())
         {
             if(msg_resp->type != FAX_MSG_OK) exit(1);
-
-            fax_rem_ip = ((sig_message_ok_t *)msg_resp)->ip;
-            fax_rem_port = ((sig_message_ok_t *)msg_resp)->port;
-
-            /* Sending thread */
-            f_thread[i][0] = start_fax_session(SEND, call_id_str, send_port,
-                                               fax_rem_ip, fax_rem_port,
-                                               tiff_filename,
-                                               &(f_session[i][0]));
 
 
             sprintf(recv_filename, "received_fax_%02d.tif", i);
@@ -296,10 +297,7 @@ int main(int argc, char *argv[])
                                                0, recv_filename,
                                                &f_session[i][0]);
 
-            pthread_join(f_thread[i][0], NULL);
             pthread_join(f_thread[i][1], NULL);
-
-            if(f_session[i][0]) free(f_session[i][0]);
             if(f_session[i][1]) free(f_session[i][1]);
 
             exit(0);
@@ -308,7 +306,18 @@ int main(int argc, char *argv[])
         sig_msgDestroy(msg_req);
         sig_msgDestroy(msg_resp);
 
-//        sleep(1);
+        msg_req = NULL;
+        msg_resp = NULL;
+    }
+
+    for(i = 0; i < ses_count; i++)
+    {
+        pthread_join(f_thread[i][0], NULL);
+    }
+
+    for(i = 0; i < ses_count; i++)
+    {
+        if(f_session[i][0]) free(f_session[i][0]);
     }
 
 _exit:
