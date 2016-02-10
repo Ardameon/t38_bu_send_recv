@@ -263,6 +263,7 @@ static int phase_d_handler(t30_state_t *s, void *user_data, int msg)
 	return T30_ERR_OK; /* I don't think this does anything */
 }
 
+extern int sendRelese(fax_session_t *f_session);
 
 /*
  *  Called at the end of the document
@@ -321,6 +322,8 @@ static void phase_e_handler(t30_state_t *s, void *user_data, int result)
 		f_session->fax_success = 1;
 	else
 		f_session->fax_success = 0;
+
+	if(f_session->pvt.caller) sendRelese(f_session);
 }
 
 

@@ -163,6 +163,30 @@ static pthread_t start_fax_session(ses_mode_e mode, const char *call_id,
     return thread;
 }
 
+extern int sendRelese(fax_session_t *f_session)
+{
+    char buffer[512];
+    int  buflen = 0;
+    sig_message_t *msg_req;
+
+    sig_msgCreateRelease(f_session->call_id, (sig_message_rel_t **)(&msg_req));
+
+    sig_msgCompose(msg_req, buffer, sizeof(buffer));
+
+    buflen = strlen(buffer);
+    printf("buffer_len: %d buffer: '%.*s'", buflen, buflen, buffer);
+
+    if ((sendPacket((uint8_t *)buffer, buflen)) != -1) {
+        printf("Data sent to %s:%d: len=%d buf='%s'\n",
+               inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port),
+               buflen, buffer);
+    } else {
+        perror("sendPacket() failed");
+    }
+
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
 
