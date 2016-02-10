@@ -176,6 +176,43 @@ enum
     T30_STATE_CALL_FINISHED
 };
 
+static const char *state_names[] =
+{
+    "NOT_STATE",
+    "T30_STATE_ANSWERING",
+    "T30_STATE_B",
+    "T30_STATE_C",
+    "T30_STATE_D",
+    "T30_STATE_D_TCF",
+    "T30_STATE_D_POST_TCF",
+    "T30_STATE_F_TCF",
+    "T30_STATE_F_CFR",
+    "T30_STATE_F_FTT",
+    "T30_STATE_F_DOC_NON_ECM",
+    "T30_STATE_F_POST_DOC_NON_ECM",
+    "T30_STATE_F_DOC_ECM",
+    "T30_STATE_F_POST_DOC_ECM",
+    "T30_STATE_F_POST_RCP_MCF",
+    "T30_STATE_F_POST_RCP_PPR",
+    "T30_STATE_F_POST_RCP_RNR",
+    "T30_STATE_R",
+    "T30_STATE_T",
+    "T30_STATE_I",
+    "T30_STATE_II",
+    "T30_STATE_II_Q",
+    "T30_STATE_III_Q_MCF",
+    "T30_STATE_III_Q_RTP",
+    "T30_STATE_III_Q_RTN",
+    "T30_STATE_IV",
+    "T30_STATE_IV_PPS_NULL",
+    "T30_STATE_IV_PPS_Q",
+    "T30_STATE_IV_PPS_RNR",
+    "T30_STATE_IV_CTC",
+    "T30_STATE_IV_EOR",
+    "T30_STATE_IV_EOR_RNR",
+    "T30_STATE_CALL_FINISHED"
+};
+
 enum
 {
     T30_MIN_SCAN_20MS = 0,
@@ -4767,7 +4804,8 @@ static void set_state(t30_state_t *s, int state)
 {
     if (s->state != state)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Changing from state %d to %d\n", s->state, state);
+//        span_log(&s->logging, SPAN_LOG_FLOW, "Changing from state %d to %d\n", s->state, state);
+        span_log(&s->logging, SPAN_LOG_FLOW, "Changing from state %s to %s\n", state_names[s->state], state_names[state]);
         s->state = state;
     }
     s->step = 0;
