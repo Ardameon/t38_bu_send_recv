@@ -31,7 +31,7 @@
 
 #define DEF_FAX_IDENT             "FAX_TRANSMITTER"
 #define DEF_FAX_HEADER            "FAX_DEFAULT_HEADER"
-#define DEF_FAX_VERBOSE           1
+#define DEF_FAX_VERBOSE           0
 #define DEF_FAX_USE_ECM           1
 #define DEF_FAX_DISABLE_V17       0
 
@@ -157,7 +157,6 @@ static int t38_tx_packet_handler(t38_core_state_t *s, void *user_data,
 	int udptl_packtlen;
 	int x;
 	int r = 0;
-	printf("fax: %s: start!\n", __func__);
 
 	f_session = (fax_session_t *)user_data;
 
@@ -556,7 +555,9 @@ void *fax_worker_thread(void *data)
 
     if(!fax_session->pvt.caller)
     {
+        printf("fax %s receiver: wait first frame\n", fax_session->call_id);
         bytes_received = receive_frame(fax_session, msg_buffer, MAX_MSG_SIZE);
+        printf("fax %s receiver: first frame received\n", fax_session->call_id);
     }
 
     fcntl(fax_session->socket_fd, F_SETFL, O_NONBLOCK);
@@ -578,7 +579,7 @@ void *fax_worker_thread(void *data)
         if (fds.revents & POLLIN) {
 
             bytes_received = receive_frame(fax_session, msg_buffer, MAX_MSG_SIZE);
-            printf("fax: Packet RECEIVED (size: %d)\n", bytes_received);
+//            printf("fax: Packet RECEIVED (size: %d)\n", bytes_received);
             if (bytes_received == 0) continue;
             if (bytes_received == -1) {
                 printf("fax: receive_frame() ERRROR: returned -1\n");
@@ -587,7 +588,7 @@ void *fax_worker_thread(void *data)
 
             ret_val = udptl_rx_packet(fax_session->pvt.udptl_state,
                                       msg_buffer, bytes_received);
-            if (ret_val) printf("fax: udptl_rx_packet() ERROR\n");
+            if (ret_val) printf("fax %s: udptl_rx_packet() ERROR\n", fax_session->call_id);
         }
 
         t38_terminal_send_timeout(fax_session->pvt.t38_state, FRAMES_PER_CHUNK);
