@@ -17,6 +17,7 @@
 typedef enum {
     FAX_MSG_SETUP,
     FAX_MSG_OK,
+    FAX_MSG_RELEASE,
     FAX_MSG_ERROR
 } sig_msg_type_e;
 
@@ -46,6 +47,10 @@ typedef struct sig_message_ok_t {
     uint16_t       port;
 } sig_message_ok_t;
 
+typedef struct sig_message_rel_t {
+    sig_message_t  msg;
+} sig_message_rel_t;
+
 typedef struct sig_message_error_t {
     sig_message_t  msg;
     sig_msg_error_e err;
@@ -59,6 +64,8 @@ int  sig_msgCreateOk(const char *call_id, uint32_t ip, uint16_t port,
                   sig_message_ok_t **msg_ok);
 int  sig_msgCreateError(const char *call_id, sig_msg_error_e err,
                   sig_message_error_t **msg_error);
+
+int sig_msgCreateRelease(const char *call_id, sig_message_rel_t **msg_rel);
 
 int  sig_msgCompose(const sig_message_t *message, char *msg_buf, int size);
 

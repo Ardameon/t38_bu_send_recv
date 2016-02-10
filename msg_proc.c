@@ -8,9 +8,10 @@
 
 #include "msg_proc.h"
 
-#define MSG_STR_SIG_SETUP "SETUP"
-#define MSG_STR_SIG_OK    "OK"
-#define MSG_STR_SIG_ERROR "ERROR"
+#define MSG_STR_SIG_SETUP   "SETUP"
+#define MSG_STR_SIG_OK      "OK"
+#define MSG_STR_SIG_RELEASE "RELEASE"
+#define MSG_STR_SIG_ERROR   "ERROR"
 
 #define MSG_PRINT_BUF_LEN 512
 
@@ -36,6 +37,7 @@ const char *sig_msgTypeStr(sig_msg_type_e type)
     {
         case FAX_MSG_SETUP:    return MSG_STR_SIG_SETUP;
         case FAX_MSG_OK:       return MSG_STR_SIG_OK;
+        case FAX_MSG_RELEASE:  return MSG_STR_SIG_RELEASE;
         case FAX_MSG_ERROR:    return MSG_STR_SIG_ERROR;
         default:               return "UNKNOWN";
     }
@@ -74,7 +76,7 @@ char *ip2str(uint32_t ip, int id)
 
 /*============================================================================*/
 
-int  sig_msgCreateSetup(const char *call_id,
+int sig_msgCreateSetup(const char *call_id,
                      uint32_t src_ip, uint16_t src_port,
                      uint32_t dst_ip, uint16_t dst_port,
                      fax_mode_e mode, sig_message_setup_t **msg_setup)
@@ -109,7 +111,7 @@ _exit:
 
 /*============================================================================*/
 
-int  sig_msgCreateOk(const char *call_id, uint32_t ip, uint16_t port,
+int sig_msgCreateOk(const char *call_id, uint32_t ip, uint16_t port,
                   sig_message_ok_t **msg_ok)
 {
     int ret_val = 0;
@@ -139,7 +141,34 @@ _exit:
 
 /*============================================================================*/
 
-int  sig_msgCreateError(const char *call_id, sig_msg_error_e err,
+int sig_msgCreateRelease(const char *call_id, sig_message_rel_t **msg_rel)
+{
+    int ret_val = 0;
+    sig_message_rel_t *rel = NULL;
+
+    if(!call_id || !msg_rel)
+    {
+        ret_val = -1; goto _exit;
+    }
+
+    rel = calloc(1, sizeof(*rel));
+    if(!rel)
+    {
+        ret_val = -2; goto _exit;
+    }
+
+    strcpy(rel->msg.call_id, call_id);
+    rel->msg.type = FAX_MSG_RELEASE;
+
+    *msg_rel = rel;
+
+_exit:
+    return ret_val;
+}
+
+/*============================================================================*/
+
+int sig_msgCreateError(const char *call_id, sig_msg_error_e err,
                   sig_message_error_t **msg_error)
 {
     int ret_val = 0;
@@ -229,6 +258,18 @@ static int msg_bufCreateOk(const sig_message_ok_t *message, char *msg_buf)
 
 /*============================================================================*/
 
+static int msg_bufCreateRelease(const sig_message_rel_t *message, char *msg_buf)
+{
+    int len = 0;
+
+    len = snprintf(msg_buf, MSG_BUF_LEN, "%s %s\r\n",
+                   sig_msgTypeStr(FAX_MSG_RELEASE), message->msg.call_id);
+
+    return len;
+}
+
+/*============================================================================*/
+
 int  sig_msgCompose(const sig_message_t *message, char *msg_buf, int size)
 {
     int ret_val = 0, len = 0;
@@ -253,6 +294,10 @@ int  sig_msgCompose(const sig_message_t *message, char *msg_buf, int size)
             len = msg_bufCreateError((sig_message_error_t *)message, buf);
             break;
 
+        case FAX_MSG_RELEASE:
+            len = msg_bufCreateRelease((sig_message_rel_t *)message, buf);
+            break;
+
         default:
             ret_val = -2;
             break;
@@ -274,7 +319,8 @@ _exit:
  *
  */
 
-static int msg_parseSetup(const char *msg_payload, sig_message_setup_t **message)
+static int msg_parseSetup(const char *msg_payload,
+                          sig_message_setup_t **message)
 {
     int ret_val = 0, res = 0;
     sig_message_setup_t msg;
@@ -424,10 +470,36 @@ _exit:
 
 /* Example:
  *
+ * RELEASE abcd01234
+ *
+ */
+static int msg_parseRelease(const char *msg_payload, sig_message_rel_t **message)
+{
+    int ret_val = 0;
+
+    (void)msg_payload;
+
+    *message = NULL;
+
+    *message = calloc(sizeof(sig_message_ok_t), 1);
+    if(*message == NULL)
+    {
+        ret_val = -5; goto _exit;
+    }
+
+_exit:
+    return ret_val;
+}
+
+/*============================================================================*/
+
+/* Example:
+ *
  * ERROR abcd01234 INTERNAL_ERR
  *
  */
-static int msg_parseError(const char *msg_payload, sig_message_error_t **message)
+static int msg_parseError(const char *msg_payload,
+                          sig_message_error_t **message)
 {
     int ret_val = 0, res = 0;
     sig_message_error_t msg;
@@ -499,6 +571,9 @@ int sig_msgParse(const char *msg_buf, sig_message_t **message)
     } else if(!strcmp(msg_type_str, sig_msgTypeStr(FAX_MSG_ERROR))) {
         res = msg_parseError(msg_payload, (sig_message_error_t **)message);
         msg_type = FAX_MSG_ERROR;
+    } else if(!strcmp(msg_type_str, sig_msgTypeStr(FAX_MSG_RELEASE))) {
+        res = msg_parseRelease(msg_payload, (sig_message_rel_t **)message);
+        msg_type = FAX_MSG_RELEASE;
     } else{
         ret_val = -3; goto _exit;
     }
@@ -559,6 +634,16 @@ static int msg_printOk(const sig_message_ok_t *message, char *buf)
 
 /*============================================================================*/
 
+static int msg_printRelease(const sig_message_rel_t *message, char *buf)
+{
+    (void)message;
+    (void)buf;
+
+    return 0;
+}
+
+/*============================================================================*/
+
 static int msg_printError(const sig_message_error_t *message, char *buf)
 {
     sprintf(buf,
@@ -585,6 +670,7 @@ int sig_msgPrint(const sig_message_t *message, char *buf, int len)
 
     sprintf(tmp_buf,
             "%s\n"
+            "\t=============================================================\n"
             "\t call_id: '%s'\n",
             sig_msgTypeStr(message->type),
             message->call_id);
@@ -601,6 +687,10 @@ int sig_msgPrint(const sig_message_t *message, char *buf, int len)
             msg_printOk((sig_message_ok_t *)message, p);
             break;
 
+        case FAX_MSG_RELEASE:
+            msg_printRelease((sig_message_rel_t *)message, p);
+            break;
+
         case FAX_MSG_ERROR:
             msg_printError((sig_message_error_t *)message, p);
             break;
@@ -610,6 +700,9 @@ int sig_msgPrint(const sig_message_t *message, char *buf, int len)
             sprintf(p, "\t PRINT_ERROR\n");
             goto _exit;
     }
+
+    strcat(tmp_buf,
+           "\t=============================================================\n");
 
     strncpy(buf, tmp_buf, len);
 
