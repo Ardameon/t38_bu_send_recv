@@ -3,3 +3,4 @@ obj/*
 bin
 bin/*
 spandsp/spandsp-0.0.6/autom4te.cache/*
+t38_bu_send_recv*
