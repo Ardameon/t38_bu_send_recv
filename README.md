@@ -9,3 +9,10 @@ recv ------------------  send
 |    ------------------    |
 ----|    fax_bu_app    |<---
      ------------------ 
+
+
+to build:
+
+./spandsp/configure.sh x64
+./spandsp/make-and-install.sh x64
+make
